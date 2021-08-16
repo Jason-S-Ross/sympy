@@ -1817,8 +1817,8 @@ class LatexPrinter(Printer):
 
         return out_str
 
-    def _printer_tensor_indices(self, name, indices, index_map={}):
-        out_str = self._print(name)
+    def _printer_tensor_index_string(self, indices, index_map={}):
+        out_str = ""
         last_valence = None
         prev_map = None
         for index in indices:
@@ -1845,6 +1845,36 @@ class LatexPrinter(Printer):
             out_str += "}"
         return out_str
 
+
+    def _printer_tensor_indices(self, name, indices, index_map={}):
+        out_str = self._print(name)
+        return out_str + self._printer_tensor_index_string(indices, index_map)
+        # last_valence = None
+        # prev_map = None
+        # for index in indices:
+        #     new_valence = index.is_up
+        #     if ((index in index_map) or prev_map) and \
+        #             last_valence == new_valence:
+        #         out_str += ","
+        #     if last_valence != new_valence:
+        #         if last_valence is not None:
+        #             out_str += "}"
+        #         if index.is_up:
+        #             out_str += "{}^{"
+        #         else:
+        #             out_str += "{}_{"
+        #     out_str += self._print(index.args[0])
+        #     if index in index_map:
+        #         out_str += "="
+        #         out_str += self._print(index_map[index])
+        #         prev_map = True
+        #     else:
+        #         prev_map = False
+        #     last_valence = new_valence
+        # if last_valence is not None:
+        #     out_str += "}"
+        # return out_str
+
     def _print_Tensor(self, expr):
         name = expr.args[0].args[0]
         indices = expr.get_indices()
@@ -1855,6 +1885,18 @@ class LatexPrinter(Printer):
         indices = expr.expr.get_indices()
         index_map = expr.index_map
         return self._printer_tensor_indices(name, indices, index_map)
+
+    def _print_TensDiff(self, expr):
+        from ..tensor.tensor import Tensor
+        inner = expr.arg
+        wrt = expr.wrt
+        index_str = self._printer_tensor_index_string(wrt, index_map={})
+        inner_str = (self._print(inner)
+                     if isinstance(inner, Tensor)
+                     else self.parenthesize(inner, precedence(expr)))
+        return "\\left.{}\\right|{{{}}}".format(inner_str, index_str)
+
+
 
     def _print_TensMul(self, expr):
         # prints expressions like "A(a)", "3*A(a)", "(1+x)*A(a)"

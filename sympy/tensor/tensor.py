@@ -927,6 +927,80 @@ class _TensorManager:
 
 TensorManager = _TensorManager()
 
+class TensorCoordinateSystem(Basic):
+    """Provides coordinate variables, christoffel symbols, and metric tensor
+    for tensor operations."""
+
+    def __new__(cls, name, symbols, metric=None, metric_inverse=None):
+        from .array import Array
+        symbols = Array(symbols)
+        if symbols.rank() != 1:
+            raise ValueError("Symbols need to be an array-like of rank 1.")
+
+        if metric is not None:
+            metric = Array(metric)
+            if metric.shape[0] != symbols.shape[0] or metric.shape[1] != symbols.shape[0]:
+                raise ValueError(
+                    "Metric tensor dimension incompatible with number of coordinates."
+                )
+            if metric.rank() != 2:
+                raise ValueError("Metric must be a tensor of rank 2.")
+        if metric_inverse is not None:
+            metric_inverse = Array(metric_inverse)
+            if metric_inverse.shape[0] != symbols.shape[0] or metric.shape[1] != symbols.shape[0]:
+                raise ValueError(
+                    "Inverse metric tensor dimension incompatible with number of coordinates."
+                )
+            if metric_inverse.rank() != 2:
+                raise ValueError("Metric inverse must be a tensor of rank 2.")
+        if metric is None and metric_inverse is None:
+            metric = Array(eye(len(symbols)))
+        obj = Basic.__new__(cls, name, symbols, metric, metric_inverse)
+        return obj
+
+    @property
+    def name(self):
+        "The name of the coordinate system."
+        return self.args[0]
+
+    @property
+    def symbols(self):
+        "The symbols for the coordinate system."
+        return self.args[1]
+
+    @memoize_property
+    def metric(self):
+        "The metric tensor for the coordinate system."
+        from sympy import Matrix
+        from .array import Array
+        if self.args[2] is None:
+            return Array(Matrix(self.metric_inverse).inv())
+        else:
+            return self.args[2]
+
+    @memoize_property
+    def metric_inverse(self):
+        from sympy import Matrix
+        from .array import Array
+        if self.args[3] is None:
+            return Array(Matrix(self.metric).inv())
+        else:
+            return self.args[3]
+
+    @memoize_property
+    def christoffel_2(self):
+        "The Christoffel symbol of the second kind for the coordinate system."
+        from .array import derive_by_array, permutedims, tensorcontraction, tensorproduct
+        derivative = derive_by_array(self.metric, self.symbols)
+        return (
+            tensorcontraction(tensorproduct(self.metric_inverse, derivative), (1, 3))
+            + permutedims(
+                tensorcontraction(tensorproduct(self.metric_inverse, derivative), (1, 3)),
+                (0, 2, 1),
+            )
+            - tensorcontraction(tensorproduct(self.metric_inverse, derivative), (1, 2))
+        ) / 2
+
 
 class TensorIndexType(Basic):
     """
@@ -2027,6 +2101,10 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
     def _replace_indices(self, repl):  # type: (tDict[TensorIndex, TensorIndex]) -> TensExpr
         raise NotImplementedError("abstract method")
 
+    def covar_diff(self, *indices):
+        return TensDiff(self, indices)
+
+
     def fun_eval(self, *index_tuples):
         deprecate_fun_eval()
         return self.substitute_indices(*index_tuples)
@@ -2130,16 +2208,32 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
 
     @staticmethod
     def _contract_and_permute_with_metric(metric, array, pos, dim):
+        """
+        metric: Rank 2 array representing metric tensor
+        array: Array to permute with metric
+        pos: Index number to permute with metric
+        dim: I don't know
+        """
         # TODO: add possibility of metric after (spinors)
         from .array import tensorcontraction, tensorproduct, permutedims
 
+        # Multiply pos by the metric
+        if isinstance(metric, TensorCoordinateSystem):
+            metric = metric.metric
         array = tensorcontraction(tensorproduct(metric, array), (1, 2+pos))
         permu = list(range(dim))
+        # swap the zeroth index with the dimth index
         permu[0], permu[pos] = permu[pos], permu[0]
         return permutedims(array, permu)
 
     @staticmethod
     def _match_indices_with_other_tensor(array, free_ind1, free_ind2, replacement_dict):
+        """ Handles index juggling for tensors.
+        Array: Array to operate on.
+        free_ind1: Initial index configuration.
+        free_ind2: Target index configuration.
+        replacement_dict: dictionary containing metrics for each index type.
+        """
         from .array import permutedims
 
         index_types1 = [i.tensor_index_type for i in free_ind1]
@@ -2182,7 +2276,10 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
             if index_type_pos not in replacement_dict:
                 raise ValueError("No metric provided to lower index")
             metric = replacement_dict[index_type_pos]
-            metric_inverse = _TensorDataLazyEvaluator.inverse_matrix(metric)
+            if isinstance(metric, TensorCoordinateSystem):
+                metric_inverse = metric.metric_inverse
+            else:
+                metric_inverse = _TensorDataLazyEvaluator.inverse_matrix(metric)
             array = TensExpr._contract_and_permute_with_metric(metric_inverse, array, pos, len(free_ind1))
         # Lower indices:
         for pos in pos2down:
@@ -2190,6 +2287,8 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
             if index_type_pos not in replacement_dict:
                 raise ValueError("No metric provided to lower index")
             metric = replacement_dict[index_type_pos]
+            if isinstance(metric, TensorCoordinateSystem):
+                metric = metric.metric
             array = TensExpr._contract_and_permute_with_metric(metric, array, pos, len(free_ind1))
 
         if free_ind1:
@@ -2270,7 +2369,11 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
         from .array import Array
 
         indices = indices or []
-        replacement_dict = {tensor: Array(array) for tensor, array in replacement_dict.items()}
+        replacement_dict = {
+            tensor: Array(array)
+            if not isinstance(array, TensorCoordinateSystem) else array
+            for tensor, array in replacement_dict.items()
+        }
 
         # Check dimensions of replaced arrays:
         for tensor, array in replacement_dict.items():
@@ -2278,15 +2381,20 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
                 expected_shape = [tensor.dim for i in range(2)]
             else:
                 expected_shape = [index_type.dim for index_type in tensor.index_types]
-            if len(expected_shape) != array.rank() or (not all([dim1 == dim2 if
-                dim1.is_number else True for dim1, dim2 in zip(expected_shape,
-                array.shape)])):
+            if not isinstance(array, TensorCoordinateSystem) and (
+                    len(expected_shape) != array.rank()
+                    or not all([
+                        dim1 == dim2 if dim1.is_number else True
+                        for dim1, dim2 in zip(expected_shape, array.shape)
+                    ])
+            ):
                 raise ValueError("shapes for tensor %s expected to be %s, "\
                     "replacement array shape is %s" % (tensor, expected_shape,
                     array.shape))
 
+        # Get the data from the tensor along with the resulting index positions
         ret_indices, array = self._extract_data(replacement_dict)
-
+        # Raise and lower indices appropriately
         last_indices, array = self._match_indices_with_other_tensor(array, indices, ret_indices, replacement_dict)
         return array
 
@@ -2956,7 +3064,10 @@ class Tensor(TensExpr):
             raise ValueError("%s not found in %s" % (self, replacement_dict))
 
         # TODO: inefficient, this should be done at root level only:
-        replacement_dict = {k: Array(v) for k, v in replacement_dict.items()}
+        replacement_dict = {
+            k: Array(v) if not isinstance(v, TensorCoordinateSystem) else v
+            for k, v in replacement_dict.items()
+        }
         array = Array(array)
 
         dum1 = self.dum
@@ -3923,6 +4034,213 @@ class TensMul(TensExpr, AssocOp):
             if d:
                 terms.append(TensMul.fromiter(self.args[:i] + (d,) + self.args[i + 1:]))
         return TensAdd.fromiter(terms)
+
+
+class TensDiff(TensExpr):
+    """Base class for covariant derivatives."""
+
+    def __new__(cls, arg, wrt):
+        from collections.abc import Iterable
+        from .array import Array
+        if isinstance(wrt, TensorIndex):
+            wrt = (wrt, )
+        elif isinstance(wrt, Iterable):
+            wrt = tuple(wrt)
+        else:
+            raise ValueError("Could not determine type of variables to differentiate")
+
+        arg, indices, free, dum, wrt = TensDiff._tensDiff_contract_indices(arg, wrt, replace_indices=True)
+        index_types = [i.tensor_index_type for i in indices]
+        index_structure = _IndexStructure(free, dum, index_types, indices)
+        obj = TensExpr.__new__(cls, arg, wrt)
+        obj._indices = indices
+        obj._wrt = wrt
+        obj._index_structure = index_structure
+        obj._free = index_structure.free[:]
+        obj._dum = index_structure.dum[:]
+        obj._free_indices = {x[0] for x in obj.free}
+        obj._rank = len(obj.free)
+        obj._ext_rank = len(obj._index_structure.free) + 2 * len(obj._index_structure.dum)
+        obj._coeff = S.One
+        return obj
+
+    index_types = property(lambda self: self._index_types)
+    free = property(lambda self: self._free)
+    dum = property(lambda self: self._dum)
+    free_indices = property(lambda self: self._free_indices)
+    rank = property(lambda self: self._rank)
+    ext_rank = property(lambda self: self._ext_rank)
+    wrt = property(lambda self: self._wrt)
+    arg = property(lambda self: self.args[0])
+
+    @staticmethod
+    def _indices_to_free_dum(arg_indices):
+        """arg_indices: List of indices
+
+        Returns: (indices, free, free_names, dummy_data)
+
+            free: List of (index, position) tuples of only the free indices
+            free_names: List of string names of the free indices
+            dummy_data: List of (dummy, up_pos, down_pos) tuples
+                dummy: TensorIndex; The dummy index
+                up_pos: int; The position the upstairs index appears
+                down_pos: int; The position the downstairs index appear
+        """
+        # TODO don't need to return indices since it's just a clone of arg_indices
+        #
+        # Dictionary containing the index of each free symbol
+        free2pos = {}
+        dummy_data = []
+        for index_pos, index in enumerate(arg_indices):
+            if not isinstance(index, TensorIndex):
+                raise TypeError("Expected TensorIndex")
+            if -index in free2pos:
+                other_pos = free2pos.pop(-index)
+                if index.is_up:
+                    dummy_data.append((index, index_pos, other_pos))
+                else:
+                    dummy_data.append((-index, other_pos, index_pos))
+            elif index in free2pos:
+                raise ValueError("Repeated index: %s" % index)
+            else:
+                free2pos[index] = index_pos
+        free = list(free2pos.items())
+        free_names = [i.name for i in free2pos.keys()]
+        dummy_data.sort(key=lambda x: x[1])
+        return free, free_names, dummy_data
+
+    @staticmethod
+    def _tensDiff_contract_indices(arg, wrt, replace_indices=True):
+        """Replace repeated indices in the expression with appropriate dummy variables."""
+        from .array import Array
+        replacements = {}
+        arg_indices = get_indices(arg) + list(wrt)
+        indices = arg_indices[:]
+        free, free_names, dummy_data  = TensDiff._indices_to_free_dum(arg_indices)
+
+        cdt = defaultdict(int)
+
+        def dummy_name_gen(tensor_index_type):
+            nd = str(cdt[tensor_index_type])
+            cdt[tensor_index_type] += 1
+            return tensor_index_type.dummy_name + '_' + nd
+
+        if replace_indices:
+            for old_index, upstairs_pos, downstairs_pos in dummy_data:
+                index_type = old_index.tensor_index_type
+                while True:
+                    dummy_name = dummy_name_gen(index_type)
+                    if dummy_name not in free_names:
+                        break
+                dummy = TensorIndex(dummy_name, index_type, True)
+                replacements[old_index] = dummy
+                replacements[-old_index] = -dummy
+                indices[upstairs_pos] = dummy
+                indices[downstairs_pos] = -dummy
+            if isinstance(arg, TensExpr):
+                arg = arg._replace_indices(replacements)
+
+            wrt = [replacements.get(ix, ix) for ix in wrt]
+        dum = [(up, down) for ix, up, down in dummy_data]
+        return arg, indices, free, dum, Array(wrt)
+
+    @property
+    def nocoeff(self):
+        # TODO Find out what this is for
+        # I don't know what this does or where it gets used
+        return self
+
+    @property
+    def coeff(self):
+        # I don't know what this does or where it gets used
+        # TODO Find out what this is for
+        return self._coeff
+
+    def get_indices(self):
+        return self._indices
+
+    def get_free_indices(self):
+        return self._index_structure.get_free_indices()
+
+    def _replace_indices(self, repl):
+        # TODO Make sure indices get replaced in our own index as well
+        wrt = [repl.get(ix, ix) for ix in self.wrt]
+        return self.func(self.arg._replace_indices(repl), wrt)
+
+    def covar_diff(self, *indices):
+        return self.func(self.arg, tuple(self.wrt) + indices)
+
+    @memoize_property
+    def rank(self):
+        if isinstance(self.args[0], TensExpr):
+            return len(self.index_types) + self.args[0].rank
+        else:
+            return 0
+
+    def doit(self, **kwargs):
+        deep = kwargs.get('deep', True)
+        arg = self.arg.doit(**kwargs) if deep else self.arg
+        if not arg:
+            return S.Zero
+        return self.func(*self.args)
+
+
+    def _extract_data(self, replacement_dict):
+        from .array import Array, derive_by_array, tensorproduct, tensorcontraction, permutedims
+        # TODO Need to handle raised indices in wrt
+        arg_indices, array = self.arg._extract_data(replacement_dict)
+        free, free_names, dummy_data = TensDiff._indices_to_free_dum(
+            list(arg_indices) + list(self.wrt)
+        )
+        # Each pass through this loop increases the rank of the tensor by 1.
+        for index in self.wrt:
+            coord_sys = replacement_dict[index.tensor_index_type]
+            if not isinstance(coord_sys, TensorCoordinateSystem):
+                raise ValueError(
+                    "Tensor head must be substituted with a "
+                    "TensorCoordinateSystem to take covariant derivatives."
+                )
+            christoffel_2 = coord_sys.christoffel_2
+            coords = coord_sys.symbols
+            # First index is the derivative with respect to, followed by remaining indices
+            result = derive_by_array(array, coords)
+            # Put derivative index last
+            result = permutedims(result, list(range(1, result.rank())) + [0])
+            # upper, lower, diff, array indices
+            product = tensorproduct(christoffel_2, array)
+            # Add a christoffel symbol for each index in the argument
+            for pos, arg_index in enumerate(arg_indices):
+                # Each christoffel symbol gets contracted with one other index
+                # so the rank will go down by 2
+                indices = list(range(product.rank() - 2))
+                if arg_index.is_up:  # Contract with 1st lower term of Christoffel
+                    gamma_term = tensorcontraction(product, (1, pos + 3))
+                    # Pos, diff, rest
+                    # Want rest..pos..rest, diff
+                else:  # Contract with upper term of Christoffel
+                    # Pos, diff, rest
+                    gamma_term = -tensorcontraction(product, (0, pos + 3))
+                # Reorder the terms, putting the differentiated variable last
+                indices = indices[2:pos+2] + indices[0:1] + indices[pos+2:] + indices[1:2]
+                result += permutedims(gamma_term, indices)
+            if index.is_up:
+                result = self._contract_and_permute_with_metric(
+                    coord_sys.metric_inverse,
+                    result,
+                    len(arg_indices),
+                    result.rank()
+                )
+            # Push this index onto the list of indices to differentiate over next round
+            arg_indices.append(index)
+            array = result
+        free.sort(key=lambda x: x[1])
+        free_indices = [i[0] for i in free]
+        # Raise indices in derivative if called for
+        return free_indices, _TensorDataLazyEvaluator.data_contract_dum(
+            [array],
+            [(up, down) for sym, up, down in dummy_data],
+            self.ext_rank
+        )
 
 
 class TensorElement(TensExpr):
