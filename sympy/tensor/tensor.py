@@ -928,8 +928,61 @@ class _TensorManager:
 TensorManager = _TensorManager()
 
 class TensorCoordinateSystem(Basic):
-    """Provides coordinate variables, christoffel symbols, and metric tensor
-    for tensor operations."""
+    """
+    Represents coordinate variables, christoffel symbols, and metric tensor
+    for tensor operations.
+
+    Parameters
+    ==========
+
+    name : name of the coordinate system
+    symbols : symbols of the coordinate variables
+    metric : the metric tensor of the coordinate system
+    metric_inverse : the inverse metric tensor of the coordinate system
+
+    Attributes
+    ==========
+
+    ``name`` : The name of the coordinate system
+    ``metric`` : The metric tensor
+    ``metric_inverse`` : The inverse metric tensor
+    ``symbols`` : The symbols of the coordinate variables
+    ``christoffel_2`` : The 2nd Christoffel symbol of the metric
+
+    Notes
+    =====
+
+    If ``metric`` is ``None`` and ``metric_inverse`` is ``None``, ``metric``
+    will be the identity matrix. If ``metric`` is ``None`` and
+    ``metric_inverse`` is not ``None``, ``metric`` will be the matrix inverse
+    of ``metric_inverse``.
+
+    If ``metric_inverse`` is None, it will be the matrix inverse of ``metric``.
+
+    This object should be mapped to a ``TensorIndexType`` in the replacement
+    dictionary passed to ``replace_with_arrays``.
+
+    Example
+    =======
+
+    >>> from sympy import Function
+    >>> from sympy.tensor.tensor import (
+    >>>     TensorIndexType, tensor_indices, tensor_heads, TensorCoordinateSystem
+    >>> )
+    >>> Euclid = TensorIndexType("Euclid", dummy_name="E")
+    >>> i = tensor_indices("i", Euclid)
+    >>> psi = tensor_heads("psi", [])
+    >>> # Take the Laplacian of psi
+    >>> laplacian = psi().covar_diff(i, -i)
+    >>> f = symbols("f", cls=Function)
+    >>> r, theta = symbols("r theta")
+    >>> # Compute the laplacian in polar coordinates
+    >>> polar = TensorCoordinateSystem("R", [r, theta], [[1, 0], [0, r**2]])
+    >>> replacement = {Euclid: polar, psi(): f(r, theta)}
+    >>> laplacian.replace_with_arrays(replacement)
+    Derivative(f(r, theta), (r, 2)) + Derivative(f(r, theta), r)/r + Derivative(f(r, theta), (theta, 2))/r**2
+
+    """
 
     def __new__(cls, name, symbols, metric=None, metric_inverse=None):
         from .array import Array
@@ -2102,6 +2155,29 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
         raise NotImplementedError("abstract method")
 
     def covar_diff(self, *indices):
+        """
+        Take the covariant derivative with respect to indices.
+
+        Examples
+        ========
+
+        >>> from sympy import Function
+        >>> from sympy.tensor.tensor import (
+        >>>     TensorIndexType, tensor_indices, tensor_heads, TensorCoordinateSystem
+        >>> )
+        >>> Euclid = TensorIndexType("Euclid", dummy_name="E")
+        >>> i = tensor_indices("i", Euclid)
+        >>> psi = tensor_heads("psi", [])
+        >>> # Take the Laplacian of psi
+        >>> laplacian = psi().covar_diff(i, -i)
+        >>> f = symbols("f", cls=Function)
+        >>> r, theta = symbols("r theta")
+        >>> # Compute the laplacian in polar coordinates
+        >>> polar = TensorCoordinateSystem("R", [r, theta], [[1, 0], [0, r**2]])
+        >>> replacement = {Euclid: polar, psi(): f(r, theta)}
+        >>> laplacian.replace_with_arrays(replacement)
+        Derivative(f(r, theta), (r, 2)) + Derivative(f(r, theta), r)/r + Derivative(f(r, theta), (theta, 2))/r**2
+        """
         return TensDiff(self, indices)
 
 
