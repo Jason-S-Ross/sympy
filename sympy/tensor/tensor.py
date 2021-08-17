@@ -2537,8 +2537,7 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
                 # If self and old have same tensor head, they should have the same
                 # total number of indices
                 for my_index, sub_index in zip(my_indices, old_indices):
-                    if my_index in my_free:
-                        replacement_indices[sub_index] = my_index
+                    replacement_indices[sub_index] = my_index
                 return new._replace_indices(replacement_indices)
             else:
                 return new
