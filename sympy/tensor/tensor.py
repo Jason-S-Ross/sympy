@@ -2405,6 +2405,9 @@ class TensAdd(TensExpr, AssocOp):
         else:
             args = self.args
 
+        # Drop zeros from add
+        args = [arg for arg in args if arg]
+
         if not args:
             return S.Zero
 
