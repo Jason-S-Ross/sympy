@@ -2308,6 +2308,56 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
                     if isinstance(a, TensExpr) else a
                     for a in self.args])
 
+    def _matches_other_tensor(self, other):
+        "Check if self matches other tensor."
+        if not isinstance(other, type(self)):
+            return False
+        if len(self.args) != len(other.args):
+            return False
+        my_args = list(self.args)
+        other_args = list(other.args)
+        while my_args:
+            my_arg = my_args.pop()
+            for i, other_arg in enumerate(other_args):
+
+                if (
+                        isinstance(my_arg, TensExpr)
+                        and isinstance(other_arg, TensExpr)
+                        and my_arg._matches_other_tensor(other_arg)
+                ) or my_arg == other_arg:
+                    break
+            else:
+                return False
+            other_args.pop(i)
+        return True
+
+    def _eval_subs(self, old, new):
+        if not isinstance(old, TensExpr):
+            return None
+        my_free, old_free = self._get_free_indices_set(), old._get_free_indices_set()
+        my_indices, old_indices = self.get_indices(), old.get_indices()
+        if len(my_free) != len(old_free):
+            # Tensors must have same number of free indices
+            return None
+        my_free_positions = [pos for pos, index in enumerate(my_indices) if index in my_free]
+        old_free_positions = [pos for pos, index in enumerate(old_indices) if index in old_free]
+        if my_free_positions != old_free_positions:
+            # Tensor indices must be in the same position to substitute
+            return None
+        if self._matches_other_tensor(old):
+            if not isinstance(new, TensExpr):
+                raise ValueError("Can't substitute non-tensor for tensor")
+            if len(new.free) != len(old.free):
+                raise ValueError("Old and new have incompatible index structures")
+            replacement_indices = {}
+            # If self and old have same tensor head, they should have the same
+            # total number of indices
+            for my_index, sub_index in zip(my_indices, old_indices):
+                if my_index not in my_free:
+                    continue
+                replacement_indices[sub_index] = my_index
+            return new._replace_indices(replacement_indices)
+
 
 class TensAdd(TensExpr, AssocOp):
     """
@@ -3120,32 +3170,8 @@ class Tensor(TensExpr):
             return TensMul.fromiter(kronecker_delta_list).doit()
             # doit necessary to rename dummy indices accordingly
 
-    def _eval_subs(self, old, new):
-        if not isinstance(old, TensExpr):
-            return None
-        my_free, old_free = self._get_free_indices_set(), old._get_free_indices_set()
-        my_indices, old_indices = self.get_indices(), old.get_indices()
-        if len(my_free) != len(old_free):
-            # Tensors must have same number of free indices
-            return None
-        my_free_positions = [pos for pos, index in enumerate(my_indices) if index in my_free]
-        old_free_positions = [pos for pos, index in enumerate(old_indices) if index in old_free]
-        if my_free_positions != old_free_positions:
-            # Tensor indices must be in the same position to substitute
-            return None
-        if old.head == self.head:
-            if not isinstance(new, TensExpr):
-                raise ValueError("Can't substitute non-tensor for tensor")
-            if len(new.free) != len(old.free):
-                raise ValueError("Old and new have incompatible index structures")
-            replacement_indices = {}
-            # If self and old have same tensor head, they should have the same
-            # total number of indices
-            for my_index, sub_index in zip(my_indices, old_indices):
-                if my_index not in my_free:
-                    continue
-                replacement_indices[sub_index] = my_index
-            return new._replace_indices(replacement_indices)
+    def _matches_other_tensor(self, other):
+        return isinstance(other, Tensor) and self.head == other.head
 
 
 
