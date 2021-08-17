@@ -1983,3 +1983,10 @@ def test_TensorType():
         Lorentz = TensorIndexType('Lorentz')
         S2 = TensorType([Lorentz]*2, sym2)
         assert isinstance(S2, TensorType)
+
+def test_add_zero_doit():
+    L = TensorIndexType('Lorentz')
+    i = tensor_indices("i", L)
+    A = TensorHead("A", [L])
+    B = TensorHead("B", [L])
+    TensAdd(TensMul(A(i), S.Zero), A(i))
