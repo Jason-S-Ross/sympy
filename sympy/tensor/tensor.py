@@ -2518,29 +2518,30 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
     def _eval_subs(self, old, new):
         if not isinstance(old, TensExpr):
             return None
-        my_free, old_free = self._get_free_indices_set(), old._get_free_indices_set()
         my_indices, old_indices = self.get_indices(), old.get_indices()
-        if len(my_free) != len(old_free):
-            # Tensors must have same number of free indices
-            return None
-        my_free_positions = [pos for pos, index in enumerate(my_indices) if index in my_free]
-        old_free_positions = [pos for pos, index in enumerate(old_indices) if index in old_free]
-        if my_free_positions != old_free_positions:
-            # Tensor indices must be in the same position to substitute
+        my_free, old_free = self._get_free_indices_set(), old._get_free_indices_set()
+        my_free_positions = {pos for pos, index in enumerate(my_indices)
+                             if index in my_free}
+        old_free_positions = {pos for pos, index in enumerate(old_indices)
+                              if index in old_free}
+        if not (my_free_positions <= old_free_positions):
+            # Free positions in self must be free positions in other
             return None
         if self._matches_other_tensor(old):
-            if not isinstance(new, TensExpr):
-                raise ValueError("Can't substitute non-tensor for tensor")
-            if len(new.free) != len(old.free):
-                raise ValueError("Old and new have incompatible index structures")
-            replacement_indices = {}
-            # If self and old have same tensor head, they should have the same
-            # total number of indices
-            for my_index, sub_index in zip(my_indices, old_indices):
-                if my_index not in my_free:
-                    continue
-                replacement_indices[sub_index] = my_index
-            return new._replace_indices(replacement_indices)
+            if old_free:
+                if not isinstance(new, TensExpr):
+                    raise ValueError("Can't substitute non-tensor for tensor")
+                if len(new.free) != len(old.free):
+                    raise ValueError("Old and new have incompatible index structures")
+                replacement_indices = {}
+                # If self and old have same tensor head, they should have the same
+                # total number of indices
+                for my_index, sub_index in zip(my_indices, old_indices):
+                    if my_index in my_free:
+                        replacement_indices[sub_index] = my_index
+                return new._replace_indices(replacement_indices)
+            else:
+                return new
 
 
 class TensAdd(TensExpr, AssocOp):
