@@ -2896,6 +2896,8 @@ class TensAdd(TensExpr, AssocOp):
 
         return self.func(*list_addends)
 
+    def covar_diff(self, *indices):
+        return self.func(*[arg.covar_diff(*indices) for arg in self.args])
 
 class Tensor(TensExpr):
     """
@@ -4169,6 +4171,14 @@ class TensMul(TensExpr, AssocOp):
                 terms.append(TensMul.fromiter(self.args[:i] + (d,) + self.args[i + 1:]))
         return TensAdd.fromiter(terms)
 
+    def covar_diff(self, *indices):
+        result = S.Zero
+        for i, arg in enumerate(self.args):
+            if isinstance(arg, TensExpr):
+                args = list(self.args[:i]) + [arg.covar_diff(*indices)] + list(self.args[i+1:])
+                result += self.func(*args)
+        return result
+
 
 class TensDiff(TensExpr):
     """Base class for covariant derivatives."""
@@ -4312,11 +4322,13 @@ class TensDiff(TensExpr):
             return 0
 
     def doit(self, **kwargs):
+        # TODO calling doit on nested diffs should compound them
         deep = kwargs.get('deep', True)
         arg = self.arg.doit(**kwargs) if deep else self.arg
+
         if not arg:
             return S.Zero
-        return self.func(*self.args)
+        return arg.covar_diff(*self.wrt)
 
 
     def _extract_data(self, replacement_dict):
@@ -4375,6 +4387,13 @@ class TensDiff(TensExpr):
             [(up, down) for sym, up, down in dummy_data],
             self.ext_rank
         )
+    def _matches_other_tensor(self, other):
+        if not isinstance(other, type(self)):
+            return False
+        if len(self.get_free_indices()) != len(other.get_free_indices()):
+            return False
+        return self.arg._matches_other_tensor(other.arg)
+
 
 
 class TensorElement(TensExpr):
